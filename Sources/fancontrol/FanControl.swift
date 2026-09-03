@@ -73,12 +73,13 @@ func emitError(_ message: String, detail: String? = nil, json: Bool) {
 func readFans(_ smc: SMC) throws -> [FanInfo] {
     var out: [FanInfo] = []
     for i in 0..<8 {
-        let actual: Double
-        do { actual = try smc.readFPE2("F\(i)Ac") }
-        catch SMCError.smcError(_) { break }
-        let mn = (try? smc.readFPE2("F\(i)Mn")) ?? 0
-        let mx = (try? smc.readFPE2("F\(i)Mx")) ?? 0
-        let tg = (try? smc.readFPE2("F\(i)Tg")) ?? actual
+        // The tach key's encoding is per-machine: Apple Silicon uses "flt "
+        // (IEEE 754 float32, little-endian); Intel Macs used "fpe2". Dispatch
+        // on the SMC's declared type rather than assuming either.
+        guard let actual = try smc.readFanFloat("F\(i)Ac") else { break }
+        let mn = (try? smc.readFanFloat("F\(i)Mn")) ?? 0
+        let mx = (try? smc.readFanFloat("F\(i)Mx")) ?? 0
+        let tg = (try? smc.readFanFloat("F\(i)Tg")) ?? actual
         let md = (try? smc.readUInt8("F\(i)Md")) ?? 0
         out.append(FanInfo(
             index: i,
@@ -181,12 +182,16 @@ extension FanControl {
             } else if fans.isEmpty {
                 print(noFansMessage())
             } else {
-                print(String(format: "%-4s %-6s %-7s %-7s %-6s %-6s",
-                             "fan", "mode", "actual", "target", "min", "max"))
+                // String(format:) with %s does not accept a Swift String; build the
+                // columns with plain string interpolation.
+                func pad(_ s: String, _ w: Int, right: Bool = false) -> String {
+                    let n = max(0, w - s.count)
+                    let space = String(repeating: " ", count: n)
+                    return right ? space + s : s + space
+                }
+                print("\(pad("fan", 4)) \(pad("mode", 6)) \(pad("actual", 7, right: true)) \(pad("target", 7, right: true)) \(pad("min", 6, right: true)) \(pad("max", 6, right: true))")
                 for f in fans {
-                    print(String(format: "%-4d %-6s %7d %7d %6d %6d",
-                                 f.index, f.mode, f.actual_rpm, f.target_rpm,
-                                 f.min_rpm, f.max_rpm))
+                    print("\(pad(String(f.index), 4)) \(pad(f.mode, 6)) \(pad(String(f.actual_rpm), 7, right: true)) \(pad(String(f.target_rpm), 7, right: true)) \(pad(String(f.min_rpm), 6, right: true)) \(pad(String(f.max_rpm), 6, right: true))")
                 }
             }
         }
@@ -206,7 +211,7 @@ extension FanControl {
             for f in fans {
                 do {
                     try smc.write("F\(f.index)Md", bytes: [1])
-                    try smc.writeFPE2("F\(f.index)Tg", Double(f.max_rpm))
+                    try smc.writeFan("F\(f.index)Tg", Double(f.max_rpm))
                 } catch {
                     emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
                     throw ExitCode(1)
@@ -272,7 +277,7 @@ extension FanControl {
                 let clamped = Int(min(max(rpm, Double(f.min_rpm)), Double(f.max_rpm)))
                 do {
                     try smc.write("F\(f.index)Md", bytes: [1])
-                    try smc.writeFPE2("F\(f.index)Tg", Double(clamped))
+                    try smc.writeFan("F\(f.index)Tg", Double(clamped))
                 } catch {
                     emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
                     throw ExitCode(1)

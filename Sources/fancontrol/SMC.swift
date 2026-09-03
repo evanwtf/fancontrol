@@ -182,4 +182,56 @@ final class SMC {
         let raw = UInt16(max(0.0, min(cap, value)) * 4.0)
         try write(key, bytes: [UInt8(raw >> 8), UInt8(raw & 0xFF)])
     }
+
+    // "flt " is IEEE 754 float32, stored little-endian in the SMC's bytes buffer
+    // on Apple Silicon. M-series Macs use this for F<n>Ac, F<n>Mn, F<n>Mx and
+    // F<n>Tg; Intel Macs used fpe2 for the same keys.
+    func readFLT(_ key: String) throws -> Double {
+        let (b, _) = try read(key)
+        guard b.count == 4 else { throw SMCError.badSize(expected: 4, got: b.count) }
+        let raw = (UInt32(b[3]) << 24) | (UInt32(b[2]) << 16)
+                | (UInt32(b[1]) << 8)  |  UInt32(b[0])
+        return Double(Float(bitPattern: raw))
+    }
+
+    func writeFLT(_ key: String, _ value: Double) throws {
+        let raw = Float(value).bitPattern
+        try write(key, bytes: [
+            UInt8( raw        & 0xFF),
+            UInt8((raw >> 8)  & 0xFF),
+            UInt8((raw >> 16) & 0xFF),
+            UInt8((raw >> 24) & 0xFF),
+        ])
+    }
+
+    // Read a fan-shaped float key without caring which encoding the machine uses.
+    // Returns nil if the key is missing.
+    func readFanFloat(_ key: String) throws -> Double? {
+        do {
+            let info = try keyInfoRaw(key)
+            switch fourCCString(info.type) {
+            case "flt ": return try readFLT(key)
+            case "fpe2": return try readFPE2(key)
+            default:     return nil
+            }
+        } catch SMCError.smcError(_) {
+            return nil
+        }
+    }
+
+    // Public keyInfo lookup for callers that want to dispatch by type.
+    func keyInfoRaw(_ key: String) throws -> (size: UInt32, type: UInt32) {
+        return try keyInfo(key)
+    }
+
+    // Write a fan target/mode float value using whichever encoding the machine
+    // uses for this key. Throws SMCError.smcError if the key is not present.
+    func writeFan(_ key: String, _ value: Double) throws {
+        let info = try keyInfo(key)
+        switch fourCCString(info.type) {
+        case "flt ": try writeFLT(key, value)
+        case "fpe2": try writeFPE2(key, value)
+        default:     throw SMCError.smcError(0x84)   // treat unknown as key-shape error
+        }
+    }
 }
