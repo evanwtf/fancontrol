@@ -1,0 +1,129 @@
+# AGENTS.md — fancontrol
+
+Notes for coding agents and scripts working inside this repository, and for
+scripts calling the built binary.
+
+## What this repository is
+
+A Swift CLI that talks to the AppleSMC user-client and exposes fan reading,
+maximum override, per-fan target RPM, and auto restoration. Its only reason to
+exist is to be driven from a benchmarking harness, so every command emits JSON
+when asked and every failure has a stable exit code.
+
+## Target hardware
+
+Only built and tested on one machine: **MacBook Pro M5 Max, 128 GB, macOS 26.6.2**. Every reported behaviour and every version-specific note (macOS version, `kIOReturnNotPrivileged` semantics, HID sensor page contents) is on that machine. Do not generalise a claim you have not observed on a second host; either add the second host to this file and to the README, or scope the claim.
+
+## Ground rules for changes
+
+1. **The JSON schema is a contract.** Field names (`fans[]`, `index`,
+   `actual_rpm`, `target_rpm`, `min_rpm`, `max_rpm`, `mode`, and the
+   `action` / `results` / `error` envelopes) are consumed by scripts. Do not
+   rename them; add new fields, keep the old ones. If a rename is truly
+   necessary, bump the major version and note it in the release.
+2. **Exit codes are a contract.** `0` success, `1` runtime error, `2` needs
+   root, `64` usage error. New failure classes get new codes; do not overload
+   `1`.
+3. **All SMC calls need root on Apple Silicon; only writes need root on Intel.** Every code path
+   `SMC.write` must be gated by `requireRoot(json:)` in a subcommand entry
+   point, not deeper.
+4. **AppleSMC key IDs are load-bearing.** `FNum`, `F<n>Ac`, `F<n>Mn`,
+   `F<n>Mx`, `F<n>Tg`, `F<n>Md`. If a key is added or changed, cite the source
+   in a comment (smcFanControl or an Apple header) — not a blog post.
+5. **The SMCParamStruct is 80 bytes with a fixed layout.** Do not reorder or
+   resize fields. `SMCParamStruct.encode()` and `.decode(_:)` in `SMC.swift`
+   are the authoritative round-trip; the test `testParamStructRoundTrip` pins
+   it and must stay green.
+6. **fpe2 is 14 bits integer + 2 bits fraction, big-endian.** Divide by 4.0
+   to decode, multiply by 4.0 to encode, and clamp the encoded value to
+   `UInt16.max`.
+
+## Ground rules for callers
+
+1. **Prefer `--json` in every scripted call.** The plain text is for humans;
+   the columns may drift.
+2. **Always pair `max` (or `set`) with `auto` in a trap.** A process that
+   exits with fans forced leaves them forced until reboot or another `auto`.
+
+   ```sh
+   sudo fancontrol max
+   trap 'sudo fancontrol auto' EXIT INT TERM
+   ```
+
+3. **Do not poll `status` faster than about 1 Hz.** Every read opens the SMC
+   user client; the SMC is a slow microcontroller and long tight loops have
+   made older Macs report zero-RPM samples.
+4. **Clamp on the caller if you care about the exact value you got.** `set`
+   clamps to `[min_rpm, max_rpm]` and reports the clamped value in
+   `results[].target_rpm`. Do not assume the RPM you asked for is the RPM
+   that was written.
+5. **The `mode` field is what macOS actually reports; do not infer.** After
+   a `max`, `mode` is `forced`. After a hardware thermal event the machine
+   can revert to `auto` on its own — read `status` between phases if that
+   matters to you.
+
+## Sudo, in a script
+
+There are three usable patterns; pick one per environment and stick with it:
+
+- **NOPASSWD for `fancontrol` only.** Add `evanhoffman ALL=(root) NOPASSWD:
+  /usr/local/bin/fancontrol` to `sudoers.d/fancontrol`. Best for a laptop
+  running the benchmark.
+- **A LaunchDaemon that owns the SMC.** Wrap the binary in a daemon and talk
+  to it over a Unix socket. Not yet built.
+- **Ask once at the start.** `sudo -v` before the trap, then rely on the
+  timestamp.
+
+## Development
+
+```sh
+swift build            # debug
+swift build -c release # ships as /usr/local/bin/fancontrol
+swift test
+```
+
+The wire-format tests do not need hardware. To exercise the SMC path locally,
+run the binary against your own Mac; there is no simulator for AppleSMC.
+
+## CI
+
+CI runs on the `evanwtf` self-hosted macOS ARM64 runner
+(`runs-on: [self-hosted, macOS, ARM64]`). The workflow builds, tests, and
+runs `fancontrol status --json` on the runner as a smoke test — it will
+exercise the whole read path against real hardware on every push.
+
+## What is deliberately out of scope
+
+- **A daemon or GUI.** This tool is called from a shell; a daemon is a
+  separate project.
+- **Per-fan curves or hysteresis.** macOS does that. The point of this tool
+  is to switch it off for the duration of a benchmark, not to replace it.
+- **Intel Mac testing.** The keys are the same, but nobody has run it on
+  Intel yet. If you do, add a note here.
+
+## Housekeeping for agents editing this file
+
+- Keep sections **short**. AGENTS.md is read as context on every session.
+- When you learn a caller-visible fact (a new field, a new exit code, a
+  gotcha), record it here rather than in a commit message alone.
+- When you remove a feature, remove its entry rather than crossing it out.
+
+## Investigation: what is available on Apple Silicon without root
+
+Verified 2026-09-03 on macOS 26.6.2, M5 Max:
+
+- `IOConnectCallStructMethod` on AppleSMC returns `kIOReturnNotPrivileged`
+  (0xe00002c2) to any non-root caller, for **reads and writes both**.
+- `powermetrics --samplers smc` refuses without sudo (and the sampler is
+  unrecognised on Apple Silicon regardless).
+- `ioreg` shows the AppleSMC endpoint but not the F<n>Ac / F<n>Tg values.
+- The `IOHIDManager` sensor page (0xff00) exposes keyboard and trackpad
+  devices; no fan or thermal sensor is published there.
+- `system_profiler` reports no fan or thermal detail.
+
+Conclusion: there is **no unprivileged fan read or write path** on modern
+Apple Silicon. Every subcommand in this tool needs sudo. For agent use,
+either a `sudoers.d` NOPASSWD entry for `/usr/local/bin/fancontrol` or a
+LaunchDaemon that owns the SMC handle and answers over a Unix socket are
+the two paths worth building; today only the first is documented in the
+README.

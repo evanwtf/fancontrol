@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift version
+        run: swift --version
+      - name: build
+        run: swift build -c release
+      - name: test
+        run: swift test
+      - name: smoke (read-only)
+        run: .build/release/fancontrol --help
