@@ -20,25 +20,32 @@ sudo cp .build/release/fancontrol /usr/local/bin/
 
 ## Use
 
-On Apple Silicon every SMC call needs root (verified on macOS 26 / M5 Max: `IOConnectCallStructMethod` returns `kIOReturnNotPrivileged` to non-root callers, and `powermetrics --samplers smc` refuses too). On Intel Macs reads work without sudo.
+Reads work as any user. Writes (`max`, `set`, `auto`) need root because the
+AppleSMC driver enforces it on the write commands, not on the transport.
 
 ```sh
-sudo fancontrol status            # print every fan, mode and RPMs
+fancontrol status                 # print every fan, mode and RPMs
 sudo fancontrol max               # force every fan to its max RPM
 sudo fancontrol set 4500          # force every fan to 4500 RPM (clamped)
 sudo fancontrol set 4500 --fan 0  # one fan only
 sudo fancontrol auto              # hand control back to macOS
 ```
 
+On a fanless Mac (all Apple Silicon MacBook Airs, for example) `status`
+prints a "no fans found" message with a search URL for that model, and
+the write subcommands refuse rather than pretending to succeed.
+
 Every subcommand accepts `--json`, which is the intended path for scripted use.
 
 ```sh
-sudo fancontrol status --json
+fancontrol status --json
 {"fans":[{"actual_rpm":1230,"index":0,"max_rpm":6800,"min_rpm":1200,"mode":"auto","target_rpm":1230}]}
 
 sudo fancontrol max --json
 {"action":"max","results":[{"fan":0,"max_rpm":6800,"min_rpm":1200,"mode":"forced","target_rpm":6800}]}
 ```
+
+On a fanless Mac, `fancontrol status --json` returns `{"fans":[]}`.
 
 Errors are also JSON when `--json` is set, on stderr:
 

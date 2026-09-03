@@ -30,11 +30,25 @@ Only built and tested on one machine: **MacBook Pro M5 Max, 128 GB, macOS 26.6.2
 4. **AppleSMC key IDs are load-bearing.** `FNum`, `F<n>Ac`, `F<n>Mn`,
    `F<n>Mx`, `F<n>Tg`, `F<n>Md`. If a key is added or changed, cite the source
    in a comment (smcFanControl or an Apple header) — not a blog post.
-5. **The SMCParamStruct is 80 bytes with a fixed layout.** Do not reorder or
-   resize fields. `SMCParamStruct.encode()` and `.decode(_:)` in `SMC.swift`
-   are the authoritative round-trip; the test `testParamStructRoundTrip` pins
-   it and must stay green.
-6. **fpe2 is 14 bits integer + 2 bits fraction, big-endian.** Divide by 4.0
+5. **The `SMCParamStruct` layout must match the driver's C struct byte for
+   byte.** It is a plain Swift struct passed straight to
+   `IOConnectCallStructMethod` — no manual encode/decode — and Swift's
+   natural alignment is what makes the offsets line up. The whole struct is
+   80 bytes (`MemoryLayout<SMCParamStruct>.stride`), verified by
+   `testParamStructSizeIs80`, which must stay green. Fields are stored in
+   **native byte order**; do not byte-swap `key`, `keyInfo.dataSize`,
+   `keyInfo.dataType`, or `data32`. Earlier versions of this file mandated a
+   hand-packed layout with different offsets and big-endian byte-swapping;
+   that layout produced `kIOReturnNotPrivileged` from the driver even under
+   sudo, and was replaced with the sibling `~/git/monitor` project's
+   proven-correct layout in PR #2.
+6. **Fans are discovered by probing `F<n>Ac` and stopping at the first gap.**
+   Do not read `FNum` — it is missing on some machines that do have fans
+   (M-series Macs among them), so trusting it silently under-reports.
+   Auxiliary keys (`F<n>Mn`, `F<n>Mx`, `F<n>Md`, `F<n>Tg`) are best-effort;
+   a machine that publishes the tach but not the write side gets a row with
+   min/max/target as zero and mode as auto.
+7. **fpe2 is 14 bits integer + 2 bits fraction, big-endian.** Divide by 4.0
    to decode, multiply by 4.0 to encode, and clamp the encoded value to
    `UInt16.max`.
 
@@ -110,20 +124,24 @@ exercise the whole read path against real hardware on every push.
 
 ## Investigation: what is available on Apple Silicon without root
 
-Verified 2026-09-03 on macOS 26.6.2, M5 Max:
+Re-verified 2026-09-03 on macOS 26.6.2, MacBook Air Mac17,3 (MDH74LL/A):
 
-- `IOConnectCallStructMethod` on AppleSMC returns `kIOReturnNotPrivileged`
-  (0xe00002c2) to any non-root caller, for **reads and writes both**.
-- `powermetrics --samplers smc` refuses without sudo (and the sampler is
-  unrecognised on Apple Silicon regardless).
-- `ioreg` shows the AppleSMC endpoint but not the F<n>Ac / F<n>Tg values.
-- The `IOHIDManager` sensor page (0xff00) exposes keyboard and trackpad
-  devices; no fan or thermal sensor is published there.
-- `system_profiler` reports no fan or thermal detail.
+- **Reads are unprivileged** on Apple Silicon. Once the struct layout
+  matches the driver's, `IOConnectCallStructMethod` on AppleSMC succeeds as
+  any user; the same `SMC` type reads fan tachometers, temperatures and
+  power in the sibling `~/git/monitor` project without root or a helper.
+- **Writes need root.** Setting `F<n>Md` or `F<n>Tg` is the part the driver
+  gates, and it returns `kIOReturnNotPrivileged` (0xe00002c2) to a non-root
+  caller.
+- Earlier notes here claimed reads also needed root under macOS 26; that
+  was a symptom of a malformed `SMCParamStruct` (packed offsets, big-endian
+  byte-swaps) being rejected by the driver in a way that mapped onto the
+  same `NotPrivileged` code. Fixed in the wire-format PR.
+- `powermetrics --samplers smc` is unrecognised on Apple Silicon regardless
+  of privilege, so it is not an alternative.
 
-Conclusion: there is **no unprivileged fan read or write path** on modern
-Apple Silicon. Every subcommand in this tool needs sudo. For agent use,
-either a `sudoers.d` NOPASSWD entry for `/usr/local/bin/fancontrol` or a
-LaunchDaemon that owns the SMC handle and answers over a Unix socket are
-the two paths worth building; today only the first is documented in the
-README.
+Conclusion: `fancontrol status` needs no sudo. `fancontrol max`, `set` and
+`auto` still do, because they write. A `sudoers.d` NOPASSWD entry for
+`/usr/local/bin/fancontrol` remains the simplest agent-driven setup; a
+LaunchDaemon that owns the SMC handle and answers over a Unix socket is the
+other option, and neither is needed for read-only status.

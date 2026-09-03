@@ -65,19 +65,25 @@ func emitError(_ message: String, detail: String? = nil, json: Bool) {
     FileHandle.standardError.write(Data(text.utf8))
 }
 
+// Fans are discovered by probing F<n>Ac and stopping at the first gap, not by
+// reading FNum -- FNum is missing on some machines that do have fans (M-series
+// Macs among them). Auxiliary keys (Mn/Mx/Md/Tg) are best-effort: a machine
+// that publishes the tach but not the write side still gets a row, with
+// min/max/target as zero and mode as "auto".
 func readFans(_ smc: SMC) throws -> [FanInfo] {
-    let count = try smc.readUInt8("FNum")
     var out: [FanInfo] = []
-    for i in 0..<Int(count) {
-        let a = try smc.readFPE2("F\(i)Ac")
-        let mn = try smc.readFPE2("F\(i)Mn")
-        let mx = try smc.readFPE2("F\(i)Mx")
-        let tg = try smc.readFPE2("F\(i)Tg")
+    for i in 0..<8 {
+        let actual: Double
+        do { actual = try smc.readFPE2("F\(i)Ac") }
+        catch SMCError.smcError(_) { break }
+        let mn = (try? smc.readFPE2("F\(i)Mn")) ?? 0
+        let mx = (try? smc.readFPE2("F\(i)Mx")) ?? 0
+        let tg = (try? smc.readFPE2("F\(i)Tg")) ?? actual
         let md = (try? smc.readUInt8("F\(i)Md")) ?? 0
         out.append(FanInfo(
             index: i,
             mode: md == 1 ? "forced" : "auto",
-            actual_rpm: Int(a.rounded()),
+            actual_rpm: Int(actual.rounded()),
             target_rpm: Int(tg.rounded()),
             min_rpm: Int(mn.rounded()),
             max_rpm: Int(mx.rounded())
@@ -96,6 +102,50 @@ func requireRoot(json: Bool) throws {
         emitError("this action needs root; re-run under sudo", json: json)
         throw ExitCode(2)
     }
+}
+
+// Apple's marketing model number (e.g. "MDH74LL/A"). IOKit's `model-number`
+// property truncates it to the base part ("MDH74"); the region suffix is only
+// added by system_profiler, so we shell out. Only called on the "no fans"
+// path, so a 100 ms fork+exec is not on any hot path.
+func modelNumber() -> String? {
+    let p = Process()
+    p.launchPath = "/usr/sbin/system_profiler"
+    p.arguments = ["SPHardwareDataType"]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle(forWritingAtPath: "/dev/null")
+    do { try p.run() } catch { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
+    for line in text.split(separator: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("Model Number:") {
+            return String(trimmed.dropFirst("Model Number:".count))
+                .trimmingCharacters(in: .whitespaces)
+        }
+    }
+    return nil
+}
+
+func noFansMessage() -> String {
+    guard let model = modelNumber() else {
+        return "no fans found — is this machine fanless? "
+             + "(all Apple Silicon MacBook Airs are)"
+    }
+    let query = "Is the Apple \(model) fanless?"
+    let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        ?? query
+    let url = "https://www.google.com/search?q=\(encoded)"
+    return "no fans found on this machine (\(model)).\n"
+         + "Confirm this model is fanless: \(url)"
+}
+
+func requireFans(_ fans: [FanInfo], json: Bool) throws {
+    guard fans.isEmpty else { return }
+    emitError(noFansMessage(), json: json)
+    throw ExitCode(1)
 }
 
 @main
@@ -128,6 +178,8 @@ extension FanControl {
 
             if json {
                 print(jsonEncode(StatusOutput(fans: fans)))
+            } else if fans.isEmpty {
+                print(noFansMessage())
             } else {
                 print(String(format: "%-4s %-6s %-7s %-7s %-6s %-6s",
                              "fan", "mode", "actual", "target", "min", "max"))
@@ -149,6 +201,7 @@ extension FanControl {
             try requireRoot(json: json)
             let smc = try openSMC(json: json)
             let fans = try readFans(smc)
+            try requireFans(fans, json: json)
             var results: [ActionResult] = []
             for f in fans {
                 do {
@@ -175,6 +228,7 @@ extension FanControl {
             try requireRoot(json: json)
             let smc = try openSMC(json: json)
             let fans = try readFans(smc)
+            try requireFans(fans, json: json)
             var results: [ActionResult] = []
             for f in fans {
                 do { try smc.write("F\(f.index)Md", bytes: [0]) }
@@ -202,6 +256,7 @@ extension FanControl {
             try requireRoot(json: json)
             let smc = try openSMC(json: json)
             let fans = try readFans(smc)
+            try requireFans(fans, json: json)
             let targets: [FanInfo]
             if let f = fan {
                 guard f >= 0 && f < fans.count else {
