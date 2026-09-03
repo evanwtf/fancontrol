@@ -8,6 +8,9 @@ Only ever built and run on **one machine**: a MacBook Pro (M5 Max, 128 GB, macOS
 
 ## Install
 
+Requires macOS 13 or newer and a Swift 5.9+ toolchain (Xcode 15 or a
+matching swift.org toolchain).
+
 ```sh
 git clone https://github.com/evanwtf/fancontrol.git
 cd fancontrol
@@ -89,5 +92,15 @@ swift build
 swift test
 ```
 
+Source layout: `Sources/fancontrol/SMC.swift` wraps the AppleSMC user-client
+(`SMCParamStruct`, fpe2 codec, key I/O); `Sources/fancontrol/FanControl.swift`
+defines the `ArgumentParser` subcommands and JSON envelopes.
+`Tests/fancontrolTests` covers the wire format (no hardware needed).
+
 CI runs on the `evanwtf` self-hosted macOS ARM64 runner
-(`.github/workflows/ci.yml`).
+(`.github/workflows/ci.yml`): `swift build -c release`, `swift test`, and a
+`fancontrol --help` smoke run.
+
+Notes for agents and scripts calling the binary — including the JSON schema
+and exit-code contract, sudo patterns, and what is deliberately out of scope
+— live in [AGENTS.md](AGENTS.md).
