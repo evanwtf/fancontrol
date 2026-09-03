@@ -3,11 +3,14 @@ import Foundation
 
 // Fan control keys, per AppleSMC:
 //   FNum : UInt8   -- number of fans
-//   F<n>Ac: fpe2   -- actual RPM
-//   F<n>Mn: fpe2   -- min RPM
-//   F<n>Mx: fpe2   -- max RPM
-//   F<n>Tg: fpe2   -- target RPM (write to set)
-//   F<n>Md: UInt8  -- mode: 0 = auto, 1 = forced (write to switch modes)
+//   F<n>Ac: flt    -- actual RPM
+//   F<n>Mn: flt    -- min RPM
+//   F<n>Mx: flt    -- max RPM
+//   F<n>Tg: flt    -- target RPM (write to set)
+//   F<n>md: UInt8  -- mode: 0 = auto, 1 = forced (write to switch modes)
+//
+// The mode key is lowercase ("md") on Apple Silicon; smcFanControl's Intel-era
+// spelling "Md" is not in this machine's key table -- see modeKeyCandidates.
 //
 // Writes need root. macOS resumes thermal policy the instant F<n>Md returns to 0.
 
@@ -70,6 +73,23 @@ func emitError(_ message: String, detail: String? = nil, json: Bool) {
 // Macs among them). Auxiliary keys (Mn/Mx/Md/Tg) are best-effort: a machine
 // that publishes the tach but not the write side still gets a row, with
 // min/max/target as zero and mode as "auto".
+// Mode-key spellings, in probe order. Apple Silicon publishes lowercase
+// "F<n>md"; smcFanControl's Intel-era spelling was "F<n>Md". The SMC key
+// table is case-sensitive, so the two are different keys. Read and write
+// paths must both go through this list so they cannot drift apart.
+func modeKeyCandidates(_ index: Int) -> [String] {
+    ["F\(index)md", "F\(index)Md"]
+}
+
+// The first mode-key spelling this machine publishes, or nil if neither
+// spelling is in the key table (then the fan reports auto and cannot be forced).
+func resolveModeKey(_ smc: SMC, _ index: Int) -> String? {
+    for candidate in modeKeyCandidates(index) {
+        if (try? smc.keyInfoRaw(candidate)) != nil { return candidate }
+    }
+    return nil
+}
+
 func readFans(_ smc: SMC) throws -> [FanInfo] {
     var out: [FanInfo] = []
     for i in 0..<8 {
@@ -80,7 +100,7 @@ func readFans(_ smc: SMC) throws -> [FanInfo] {
         let mn = (try? smc.readFanFloat("F\(i)Mn")) ?? 0
         let mx = (try? smc.readFanFloat("F\(i)Mx")) ?? 0
         let tg = (try? smc.readFanFloat("F\(i)Tg")) ?? actual
-        let md = (try? smc.readUInt8("F\(i)Md")) ?? 0
+        let md = resolveModeKey(smc, i).flatMap { (try? smc.readUInt8($0)) } ?? 0
         out.append(FanInfo(
             index: i,
             mode: md == 1 ? "forced" : "auto",
@@ -209,8 +229,12 @@ extension FanControl {
             try requireFans(fans, json: json)
             var results: [ActionResult] = []
             for f in fans {
+                guard let modeKey = resolveModeKey(smc, f.index) else {
+                    emitError("fan \(f.index) has no mode key (probed \(modeKeyCandidates(f.index).joined(separator: ", ")))", json: json)
+                    throw ExitCode(1)
+                }
                 do {
-                    try smc.write("F\(f.index)Md", bytes: [1])
+                    try smc.write(modeKey, bytes: [1])
                     try smc.writeFan("F\(f.index)Tg", Double(f.max_rpm))
                 } catch {
                     emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
@@ -236,7 +260,11 @@ extension FanControl {
             try requireFans(fans, json: json)
             var results: [ActionResult] = []
             for f in fans {
-                do { try smc.write("F\(f.index)Md", bytes: [0]) }
+                guard let modeKey = resolveModeKey(smc, f.index) else {
+                    emitError("fan \(f.index) has no mode key (probed \(modeKeyCandidates(f.index).joined(separator: ", ")))", json: json)
+                    throw ExitCode(1)
+                }
+                do { try smc.write(modeKey, bytes: [0]) }
                 catch {
                     emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
                     throw ExitCode(1)
@@ -275,8 +303,12 @@ extension FanControl {
             var results: [ActionResult] = []
             for f in targets {
                 let clamped = Int(min(max(rpm, Double(f.min_rpm)), Double(f.max_rpm)))
+                guard let modeKey = resolveModeKey(smc, f.index) else {
+                    emitError("fan \(f.index) has no mode key (probed \(modeKeyCandidates(f.index).joined(separator: ", ")))", json: json)
+                    throw ExitCode(1)
+                }
                 do {
-                    try smc.write("F\(f.index)Md", bytes: [1])
+                    try smc.write(modeKey, bytes: [1])
                     try smc.writeFan("F\(f.index)Tg", Double(clamped))
                 } catch {
                     emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)

@@ -23,6 +23,7 @@ enum SMCError: Error, CustomStringConvertible {
     case notPrivileged
     case smcError(UInt8)
     case badKey(String)
+    case badKeyType(String)
     case badSize(expected: Int, got: Int)
 
     var description: String {
@@ -31,7 +32,14 @@ enum SMCError: Error, CustomStringConvertible {
         case .openFailed(let r): return "IOServiceOpen failed: 0x\(String(UInt32(bitPattern: r), radix: 16))"
         case .ioFailed(let r): return "IOConnectCallStructMethod failed: 0x\(String(UInt32(bitPattern: r), radix: 16))"
         case .notPrivileged: return "SMC access denied; re-run under sudo"
+        case .smcError(0x84):
+            // Verified on Mac17,3 (M5 Max, macOS 26.6.2): keyInfo on a key
+            // that is not in the SMC's table (e.g. "XXXX", "F0Md") answers
+            // result 0x84, while any real key answers 0.
+            return "SMC returned error 0x84 (key not found)"
         case .smcError(let c): return "SMC returned error 0x\(String(c, radix: 16))"
+        case .badKey(let k): return "SMC key must be 4 ASCII chars, got \(k.debugDescription)"
+        case .badKeyType(let t): return "SMC key has unsupported type \(t.debugDescription)"
         case .badKey(let k): return "SMC key must be 4 ASCII chars, got \(k.debugDescription)"
         case .badSize(let e, let g): return "expected \(e) bytes, got \(g)"
         }
@@ -225,13 +233,13 @@ final class SMC {
     }
 
     // Write a fan target/mode float value using whichever encoding the machine
-    // uses for this key. Throws SMCError.smcError if the key is not present.
+    // uses for this key. Throws SMCError.badKeyType if the type is neither.
     func writeFan(_ key: String, _ value: Double) throws {
         let info = try keyInfo(key)
         switch fourCCString(info.type) {
         case "flt ": try writeFLT(key, value)
         case "fpe2": try writeFPE2(key, value)
-        default:     throw SMCError.smcError(0x84)   // treat unknown as key-shape error
+        default:     throw SMCError.badKeyType(fourCCString(info.type))
         }
     }
 }

@@ -28,8 +28,14 @@ Only built and tested on one machine: **MacBook Pro M5 Max, 128 GB, macOS 26.6.2
    `SMC.write` must be gated by `requireRoot(json:)` in a subcommand entry
    point, not deeper.
 4. **AppleSMC key IDs are load-bearing.** `FNum`, `F<n>Ac`, `F<n>Mn`,
-   `F<n>Mx`, `F<n>Tg`, `F<n>Md`. If a key is added or changed, cite the source
-   in a comment (smcFanControl or an Apple header) — not a blog post.
+   `F<n>Mx`, `F<n>Tg`, `F<n>md`. The mode key is lowercase `md` on Apple
+   Silicon; smcFanControl's Intel-era spelling `F<n>Md` is not in the key
+   table there, and keyInfo on it answers 0x84 (key not found) — verified by
+   enumerating the live key table on Mac17,3 (M5 Max, macOS 26.6.2). The
+   spelling list is pinned by `testModeKeyCandidates`; read and write paths
+   must share it. If a key is added or changed, cite the source in a comment
+   (smcFanControl, an Apple header, or a live key-table probe) — not a blog
+   post.
 5. **The `SMCParamStruct` layout must match the driver's C struct byte for
    byte.** It is a plain Swift struct passed straight to
    `IOConnectCallStructMethod` — no manual encode/decode — and Swift's
@@ -45,7 +51,7 @@ Only built and tested on one machine: **MacBook Pro M5 Max, 128 GB, macOS 26.6.2
 6. **Fans are discovered by probing `F<n>Ac` and stopping at the first gap.**
    Do not read `FNum` — it is missing on some machines that do have fans
    (M-series Macs among them), so trusting it silently under-reports.
-   Auxiliary keys (`F<n>Mn`, `F<n>Mx`, `F<n>Md`, `F<n>Tg`) are best-effort;
+   Auxiliary keys (`F<n>Mn`, `F<n>Mx`, `F<n>md`, `F<n>Tg`) are best-effort;
    a machine that publishes the tach but not the write side gets a row with
    min/max/target as zero and mode as auto.
 7. **fpe2 is 14 bits integer + 2 bits fraction, big-endian.** Divide by 4.0
@@ -130,7 +136,7 @@ Re-verified 2026-09-03 on macOS 26.6.2, MacBook Air Mac17,3 (MDH74LL/A):
   matches the driver's, `IOConnectCallStructMethod` on AppleSMC succeeds as
   any user; the same `SMC` type reads fan tachometers, temperatures and
   power in the sibling `~/git/monitor` project without root or a helper.
-- **Writes need root.** Setting `F<n>Md` or `F<n>Tg` is the part the driver
+- **Writes need root.** Setting `F<n>md` or `F<n>Tg` is the part the driver
   gates, and it returns `kIOReturnNotPrivileged` (0xe00002c2) to a non-root
   caller.
 - Earlier notes here claimed reads also needed root under macOS 26; that

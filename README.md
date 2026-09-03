@@ -71,7 +71,7 @@ trap 'sudo fancontrol auto' EXIT
 ./run-my-benchmark.sh
 ```
 
-`fancontrol auto` sets `F<n>Md` back to `0`; macOS's own thermal policy resumes
+`fancontrol auto` sets `F<n>md` back to `0`; macOS's own thermal policy resumes
 immediately. If the process dies without running `auto`, a reboot also restores
 default behaviour — the mode override is not persisted across boots.
 
@@ -87,8 +87,10 @@ does when it can.
 
 - [`hholtmann/smcFanControl`](https://github.com/hholtmann/smcFanControl) — the
   original reverse-engineering of the AppleSMC user-client, from which the
-  `SMCParamStruct` layout, selector `2`, key IDs (`F<n>Md`, `F<n>Tg`, `FNum`)
-  and the fpe2 encoding all descend.
+  `SMCParamStruct` layout, selector `2`, key IDs (`FNum`, `F<n>Ac`, `F<n>Mn`,
+  `F<n>Mx`, `F<n>Tg`) and the fpe2 encoding all descend. The mode key's
+  lowercase `md` spelling was verified against the live SMC key table, where
+  smcFanControl's `F<n>Md` does not exist.
 - [`beltex/SMCKit`](https://github.com/beltex/SMCKit) — a modern Swift port of
   the same interface.
 

@@ -43,6 +43,17 @@ final class FanControlTests: XCTestCase {
         }
     }
 
+    // The fan mode key is lowercase on Apple Silicon. Enumerating the live SMC
+    // key table on Mac17,3 (M5 Max, macOS 26.6.2) found "F0md"/"F1md" (ui8,
+    // size 1) and no "F0Md" -- keyInfo on the uppercase spelling returns 0x84,
+    // key not found, which is what `max` died on. smcFanControl's Intel-era
+    // spelling was "F<n>Md". Read and write paths must both go through this
+    // list so they cannot drift apart again.
+    func testModeKeyCandidates() {
+        XCTAssertEqual(modeKeyCandidates(0), ["F0md", "F0Md"])
+        XCTAssertEqual(modeKeyCandidates(3), ["F3md", "F3Md"])
+    }
+
     // Every SMC integration path is gated on live hardware; run the CLI itself
     // for that. This suite pins the wire format that talks to AppleSMC.
 }
