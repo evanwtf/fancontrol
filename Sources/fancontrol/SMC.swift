@@ -2,9 +2,19 @@ import Foundation
 import IOKit
 
 // Minimal AppleSMC user-client bridge. Read/write of 4-char SMC keys.
-// Writes always require root. On Apple Silicon, most reads do too --
-// IOConnectCallStructMethod returns kIOReturnNotPrivileged (0xe00002c2)
-// to non-root callers.
+//
+// The struct passed to IOConnectCallStructMethod must match the driver's
+// SMCParamStruct byte for byte. Getting that layout wrong makes the driver
+// reject the request, and one of the codes it can reject with is
+// kIOReturnNotPrivileged even to a root caller -- so the "needs sudo" error
+// was, historically, a symptom of a malformed struct rather than of missing
+// privilege.
+//
+// The layout below uses Swift's natural struct alignment, which matches the
+// C struct in Apple's original SMC sample. The proof it is right is that the
+// sibling `monitor` project reads the SMC unprivileged with the same layout.
+// Writes still require root -- that is a real privilege check the driver
+// applies to write commands.
 
 enum SMCError: Error, CustomStringConvertible {
     case serviceNotFound
@@ -34,79 +44,40 @@ private let kSMCReadKey:    UInt8 = 5
 private let kSMCWriteKey:   UInt8 = 6
 private let kSMCGetKeyInfo: UInt8 = 9
 
-// AppleSMC's SMCParamStruct is 80 bytes. Its multi-byte fields sit at
-// offsets that are not naturally aligned, so we encode and decode with
-// byte-wise memory copies (via loadUnaligned/withUnsafeBytes).
+// Must match the driver's SMCParamStruct byte for byte. Field names are the
+// ones Apple uses in the original SMC sample so the layout can be checked
+// against it. Swift's natural alignment lays these out at the same offsets
+// as the C struct.
 struct SMCParamStruct {
     var key: UInt32 = 0
-    var vers0: UInt8 = 0
-    var vers1: UInt8 = 0
-    var vers2: UInt8 = 0
-    var vers3: UInt8 = 0
-    var vers4: UInt16 = 0
-    var pLimit0: UInt16 = 0
-    var pLimit1: UInt16 = 0
-    var pLimit2: UInt16 = 0
-    var pLimit3: UInt16 = 0
-    var keyInfo_dataSize: UInt32 = 0
-    var keyInfo_dataType: UInt32 = 0
-    var keyInfo_dataAttributes: UInt8 = 0
+    var versionMajor: UInt8 = 0
+    var versionMinor: UInt8 = 0
+    var versionBuild: UInt8 = 0
+    var versionReserved: UInt8 = 0
+    var versionRelease: UInt16 = 0
+    var limitVersion: UInt16 = 0
+    var limitLength: UInt16 = 0
+    var limitCPU: UInt32 = 0
+    var limitGPU: UInt32 = 0
+    var limitMemory: UInt32 = 0
+    var keyInfo = SMCKeyInfo()
+    var padding: UInt16 = 0
     var result: UInt8 = 0
     var status: UInt8 = 0
     var data8: UInt8 = 0
     var data32: UInt32 = 0
-    var bytes: [UInt8] = Array(repeating: 0, count: 32)
+    var bytes: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+}
 
-    func encode() -> Data {
-        var d = Data(count: 80)
-        d.withUnsafeMutableBytes { raw -> Void in
-            let base = raw.baseAddress!
-            func put<T>(_ value: T, at offset: Int) {
-                _ = withUnsafeBytes(of: value) { src in
-                    memcpy(base.advanced(by: offset), src.baseAddress, MemoryLayout<T>.size)
-                }
-            }
-            put(key.bigEndian, at: 0)
-            put(vers0, at: 4)
-            put(vers1, at: 5)
-            put(vers2, at: 6)
-            put(vers3, at: 7)
-            put(vers4, at: 8)
-            put(pLimit0, at: 10)
-            put(pLimit1, at: 12)
-            put(pLimit2, at: 14)
-            put(pLimit3, at: 16)
-            put(keyInfo_dataSize.bigEndian, at: 18)
-            put(keyInfo_dataType.bigEndian, at: 22)
-            put(keyInfo_dataAttributes, at: 26)
-            put(result, at: 30)
-            put(status, at: 31)
-            put(data8, at: 32)
-            put(data32.bigEndian, at: 34)
-            for i in 0..<32 { put(bytes[i], at: 40 + i) }
-        }
-        return d
-    }
-
-    static func decode(_ d: Data) -> SMCParamStruct {
-        var s = SMCParamStruct()
-        d.withUnsafeBytes { raw in
-            let base = raw.baseAddress!
-            func get<T>(_ type: T.Type, at offset: Int) -> T {
-                return base.advanced(by: offset).loadUnaligned(as: type)
-            }
-            s.key = UInt32(bigEndian: get(UInt32.self, at: 0))
-            s.keyInfo_dataSize = UInt32(bigEndian: get(UInt32.self, at: 18))
-            s.keyInfo_dataType = UInt32(bigEndian: get(UInt32.self, at: 22))
-            s.keyInfo_dataAttributes = get(UInt8.self, at: 26)
-            s.result = get(UInt8.self, at: 30)
-            s.status = get(UInt8.self, at: 31)
-            s.data8 = get(UInt8.self, at: 32)
-            s.data32 = UInt32(bigEndian: get(UInt32.self, at: 34))
-            for i in 0..<32 { s.bytes[i] = get(UInt8.self, at: 40 + i) }
-        }
-        return s
-    }
+struct SMCKeyInfo {
+    var dataSize: IOByteCount32 = 0
+    var dataType: UInt32 = 0
+    var dataAttributes: UInt8 = 0
 }
 
 func fourCC(_ s: String) throws -> UInt32 {
@@ -141,24 +112,18 @@ final class SMC {
     deinit { if conn != 0 { IOServiceClose(conn) } }
 
     private func call(_ input: SMCParamStruct) throws -> SMCParamStruct {
-        let inBytes = input.encode()
-        var outBytes = Data(count: 80)
-        var outSize: size_t = 80
-        let rc = inBytes.withUnsafeBytes { inPtr -> kern_return_t in
-            outBytes.withUnsafeMutableBytes { outPtr -> kern_return_t in
-                IOConnectCallStructMethod(
-                    conn,
-                    kSMCHandleYPCEvent,
-                    inPtr.baseAddress, 80,
-                    outPtr.baseAddress, &outSize
-                )
-            }
-        }
+        var input = input
+        var output = SMCParamStruct()
+        var outSize = MemoryLayout<SMCParamStruct>.stride
+        let rc = IOConnectCallStructMethod(
+            conn, kSMCHandleYPCEvent,
+            &input, MemoryLayout<SMCParamStruct>.stride,
+            &output, &outSize
+        )
         if rc == kIOReturnNotPrivileged { throw SMCError.notPrivileged }
         guard rc == kIOReturnSuccess else { throw SMCError.ioFailed(rc) }
-        let out = SMCParamStruct.decode(outBytes)
-        if out.result != 0 { throw SMCError.smcError(out.result) }
-        return out
+        if output.result != 0 { throw SMCError.smcError(output.result) }
+        return output
     }
 
     private func keyInfo(_ key: String) throws -> (size: UInt32, type: UInt32) {
@@ -166,19 +131,20 @@ final class SMC {
         p.key = try fourCC(key)
         p.data8 = kSMCGetKeyInfo
         let r = try call(p)
-        return (r.keyInfo_dataSize, r.keyInfo_dataType)
+        return (r.keyInfo.dataSize, r.keyInfo.dataType)
     }
 
     func read(_ key: String) throws -> (bytes: [UInt8], type: String) {
         let info = try keyInfo(key)
         var p = SMCParamStruct()
         p.key = try fourCC(key)
-        p.keyInfo_dataSize = info.size
-        p.keyInfo_dataType = info.type
+        p.keyInfo.dataSize = info.size
+        p.keyInfo.dataType = info.type
         p.data8 = kSMCReadKey
         let r = try call(p)
-        let n = Int(info.size)
-        return (Array(r.bytes.prefix(n)), fourCCString(info.type))
+        let n = max(0, min(32, Int(info.size)))
+        return (withUnsafeBytes(of: r.bytes) { Array($0.prefix(n)) },
+                fourCCString(info.type))
     }
 
     func write(_ key: String, bytes: [UInt8]) throws {
@@ -188,10 +154,12 @@ final class SMC {
         }
         var p = SMCParamStruct()
         p.key = try fourCC(key)
-        p.keyInfo_dataSize = info.size
-        p.keyInfo_dataType = info.type
+        p.keyInfo.dataSize = info.size
+        p.keyInfo.dataType = info.type
         p.data8 = kSMCWriteKey
-        for (i, b) in bytes.enumerated() where i < 32 { p.bytes[i] = b }
+        withUnsafeMutableBytes(of: &p.bytes) { dst in
+            for (i, b) in bytes.enumerated() where i < 32 { dst[i] = b }
+        }
         _ = try call(p)
     }
 
@@ -213,5 +181,57 @@ final class SMC {
         let cap = Double(UInt16.max) / 4.0
         let raw = UInt16(max(0.0, min(cap, value)) * 4.0)
         try write(key, bytes: [UInt8(raw >> 8), UInt8(raw & 0xFF)])
+    }
+
+    // "flt " is IEEE 754 float32, stored little-endian in the SMC's bytes buffer
+    // on Apple Silicon. M-series Macs use this for F<n>Ac, F<n>Mn, F<n>Mx and
+    // F<n>Tg; Intel Macs used fpe2 for the same keys.
+    func readFLT(_ key: String) throws -> Double {
+        let (b, _) = try read(key)
+        guard b.count == 4 else { throw SMCError.badSize(expected: 4, got: b.count) }
+        let raw = (UInt32(b[3]) << 24) | (UInt32(b[2]) << 16)
+                | (UInt32(b[1]) << 8)  |  UInt32(b[0])
+        return Double(Float(bitPattern: raw))
+    }
+
+    func writeFLT(_ key: String, _ value: Double) throws {
+        let raw = Float(value).bitPattern
+        try write(key, bytes: [
+            UInt8( raw        & 0xFF),
+            UInt8((raw >> 8)  & 0xFF),
+            UInt8((raw >> 16) & 0xFF),
+            UInt8((raw >> 24) & 0xFF),
+        ])
+    }
+
+    // Read a fan-shaped float key without caring which encoding the machine uses.
+    // Returns nil if the key is missing.
+    func readFanFloat(_ key: String) throws -> Double? {
+        do {
+            let info = try keyInfoRaw(key)
+            switch fourCCString(info.type) {
+            case "flt ": return try readFLT(key)
+            case "fpe2": return try readFPE2(key)
+            default:     return nil
+            }
+        } catch SMCError.smcError(_) {
+            return nil
+        }
+    }
+
+    // Public keyInfo lookup for callers that want to dispatch by type.
+    func keyInfoRaw(_ key: String) throws -> (size: UInt32, type: UInt32) {
+        return try keyInfo(key)
+    }
+
+    // Write a fan target/mode float value using whichever encoding the machine
+    // uses for this key. Throws SMCError.smcError if the key is not present.
+    func writeFan(_ key: String, _ value: Double) throws {
+        let info = try keyInfo(key)
+        switch fourCCString(info.type) {
+        case "flt ": try writeFLT(key, value)
+        case "fpe2": try writeFPE2(key, value)
+        default:     throw SMCError.smcError(0x84)   // treat unknown as key-shape error
+        }
     }
 }
