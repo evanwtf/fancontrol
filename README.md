@@ -8,6 +8,24 @@ Only ever built and run on **one machine**: a MacBook Pro (M5 Max, 128 GB, macOS
 
 ## Install
 
+### From a release
+
+Download the latest zip from [releases][releases], unpack it, and run the
+install script inside:
+
+```sh
+unzip fancontrol-*-macos-arm64.zip
+cd fancontrol-*-macos-arm64
+./install.sh
+```
+
+The binary is signed with a Developer ID and notarized by Apple, so it needs
+no toolchain and no security exception. Apple Silicon only.
+
+[releases]: https://github.com/evanwtf/fancontrol/releases/latest
+
+### From source
+
 Requires macOS 13 or newer and a Swift 5.9+ toolchain (Xcode 15 or a
 matching swift.org toolchain).
 
@@ -16,6 +34,9 @@ git clone https://github.com/evanwtf/fancontrol.git
 cd fancontrol
 Scripts/install.sh
 ```
+
+It is the same script either way: it uses the binary next to it if there is
+one, and builds a fresh one if there is not.
 
 That builds and signs the binary, installs it to `/usr/local/bin/fancontrol`
 (root-owned), and writes `/etc/sudoers.d/fancontrol` granting passwordless
@@ -110,6 +131,24 @@ does when it can.
   smcFanControl's `F<n>Md` does not exist.
 - [`beltex/SMCKit`](https://github.com/beltex/SMCKit) — a modern Swift port of
   the same interface.
+
+## Releases
+
+The version in `Sources/fancontrol/FanControl.swift` decides what ships.
+To cut a release:
+
+1. Add a `## <version>` section to `docs/changelog.md`.
+2. Bump the `version:` field in `Sources/fancontrol/FanControl.swift`.
+3. Push to `main`.
+
+The release workflow sees a version with no tag, builds and signs the binary,
+notarizes the zip with Apple, tags `v<version>`, and publishes the release
+with the notes from the changelog. A push whose version is already tagged
+does nothing, so ordinary commits do not cut releases. A version with no
+changelog section is refused rather than published with empty notes.
+
+`Scripts/package.sh` does the build-sign-zip-notarize part on its own, so a
+release can be reproduced locally exactly as CI cut it.
 
 ## Development
 

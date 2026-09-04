@@ -16,5 +16,10 @@ jobs:
         run: swift build -c release
       - name: test
         run: swift test
+      - name: release helper scripts
+        # version.sh and release-notes.sh decide what the release workflow
+        # ships and whether it ships at all. They run unattended there, so
+        # their refusals are tested here.
+        run: Scripts/test-helpers.sh
       - name: smoke (read-only)
         run: .build/release/fancontrol --help
