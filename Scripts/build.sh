@@ -29,10 +29,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 # One version, and it lives in the source so `fancontrol --version` and the
-# installed binary cannot disagree.
-VERSION="$(sed -n 's/.*version: "\(.*\)".*/\1/p' \
-    Sources/fancontrol/FanControl.swift | head -1)"
-[ -n "$VERSION" ] || { echo "no version in Sources/fancontrol/FanControl.swift" >&2; exit 1; }
+# installed binary cannot disagree. Scripts/version.sh is the only reader of
+# that field; it exits non-zero if the field is missing or malformed.
+VERSION="$(Scripts/version.sh)"
 readonly VERSION
 
 destination="${1:-}"

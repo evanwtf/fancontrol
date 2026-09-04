@@ -1,0 +1,133 @@
+name: release
+
+# Releases are cut by bumping the version, not by pushing a tag. Every push to
+# main asks one question: does a release already exist for the version in
+# Sources/fancontrol/FanControl.swift? If it does, the job stops. If it does
+# not, this builds, signs, notarizes, tags, and publishes it.
+#
+# So an ordinary commit does nothing, and the one place a version is written
+# stays the one thing that decides what ships.
+
+on:
+  push:
+    branches: [main]
+  # Cutting a release by hand, when a bump landed while the runner was down.
+  workflow_dispatch:
+
+# Never two releases at once: both would compute the same version, and the
+# loser would fail after notarizing. Do not cancel a run in progress -- it may
+# be mid-submission to Apple.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags decide whether this version was already released, so they
+          # have to be here. The default shallow checkout fetches none.
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: echo "version=$(Scripts/version.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Has this version already been released?
+        id: check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "v${VERSION} is already tagged; nothing to release."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v${VERSION} has no tag; cutting the release."
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Everything below runs only for a version that has not shipped.
+
+      - name: Check the release notes exist
+        if: steps.check.outputs.needed == 'true'
+        run: Scripts/release-notes.sh "${{ steps.version.outputs.version }}"
+
+      - name: Check the signing identity is on this runner
+        if: steps.check.outputs.needed == 'true'
+        env:
+          IDENTITY: ${{ secrets.FANCONTROL_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IDENTITY}" ]; then
+            echo "::error::FANCONTROL_SIGN_IDENTITY is not set. Add the repository secret." >&2
+            exit 1
+          fi
+          # Fail here, with the list in the log, rather than inside codesign
+          # after a full release build.
+          if ! security find-identity -v -p codesigning | grep -qF "${IDENTITY}"; then
+            echo "::error::No codesigning identity matching '${IDENTITY}' in this runner's keychain." >&2
+            security find-identity -v -p codesigning >&2
+            exit 1
+          fi
+          echo "Found ${IDENTITY}"
+
+      - name: Build, sign, notarize
+        if: steps.check.outputs.needed == 'true'
+        env:
+          FANCONTROL_SIGN_IDENTITY: ${{ secrets.FANCONTROL_SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.FANCONTROL_NOTARY_KEY }}
+          FANCONTROL_NOTARY_KEY_ID: ${{ secrets.FANCONTROL_NOTARY_KEY_ID }}
+          FANCONTROL_NOTARY_ISSUER_ID: ${{ secrets.FANCONTROL_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for name in NOTARY_KEY FANCONTROL_NOTARY_KEY_ID FANCONTROL_NOTARY_ISSUER_ID; do
+            eval "value=\${$name}"
+            if [ -z "${value}" ]; then
+              echo "::error::${name} is not set. Add the repository secret." >&2
+              exit 1
+            fi
+          done
+
+          # The .p8 has to be a file for notarytool. Write it outside the
+          # workspace so a later step cannot archive it by accident, and
+          # remove it however this step ends -- this is a shared runner.
+          key_file="$(mktemp "${RUNNER_TEMP}/notary-key.XXXXXX.p8")"
+          trap 'rm -f "${key_file}"' EXIT
+          chmod 600 "${key_file}"
+          printf '%s' "${NOTARY_KEY}" > "${key_file}"
+
+          FANCONTROL_NOTARY_KEY_PATH="${key_file}" \
+            Scripts/package.sh --notarize
+
+      - name: Tag and publish
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          zip="dist/fancontrol-${VERSION}-macos-$(uname -m).zip"
+          [ -f "${zip}" ] || { echo "::error::no zip at ${zip}" >&2; exit 1; }
+
+          notes="$(mktemp "${RUNNER_TEMP}/notes.XXXXXX.md")"
+          Scripts/release-notes.sh "${VERSION}" > "${notes}"
+
+          # An annotated tag, with a one-line message. The notes go in the
+          # release via --notes-file: backticks in a `git tag -m` string are
+          # expanded by the shell and silently delete text.
+          git tag -a "v${VERSION}" -m "fancontrol v${VERSION}"
+          git push origin "v${VERSION}"
+
+          gh release create "v${VERSION}" "${zip}" \
+            --title "fancontrol v${VERSION}" \
+            --notes-file "${notes}"
+
+      - name: Clean the build output
+        if: always()
+        run: rm -rf dist
