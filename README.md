@@ -132,24 +132,53 @@ does when it can.
 - [`beltex/SMCKit`](https://github.com/beltex/SMCKit) — a modern Swift port of
   the same interface.
 
-## Use it with Claude Code
+## Driving it from an agent
 
-`skills/fancontrol/SKILL.md` is a [skill](https://agentskills.io) that teaches
-a coding agent to drive this tool: read with `status`, write with `max` and
-`auto` only, always `sudo -n` so a password prompt cannot hang a
-non-interactive session, and always restore the fans afterwards. Install it
-for your own user:
+Paste this into whatever your coding agent reads for rules — a Claude Code
+skill, a Cursor rule, an `AGENTS.md` section, a system prompt:
 
-```sh
-mkdir -p ~/.claude/skills
-cp -r skills/fancontrol ~/.claude/skills/
+```text
+fancontrol reads and overrides Mac fan speeds via AppleSMC on Apple Silicon.
+Every subcommand takes --json. Exit codes: 0 ok, 1 error, 2 needs root,
+64 usage error.
+
+Use only these three:
+  fancontrol status --json            read RPM and mode; needs no sudo
+  sudo -n fancontrol max --json       pin every fan to maximum
+  sudo -n fancontrol auto --json      hand control back to macOS
+("reset" is a synonym for "auto".)
+
+Never run `fancontrol set <rpm>`. Do not run it, suggest it, or put it in a
+script. max and auto are safe in one direction only: they add cooling or
+return control to macOS. set is the one command that can hold fans below what
+thermal policy is asking for, which is how a machine overheats or throttles
+under load. That call needs a human who can see the machine. If a specific
+RPM is genuinely wanted, say so and let the user run it.
+
+Always use `sudo -n`. Plain sudo waits on a password prompt that is invisible
+in a non-interactive session, so the command hangs until it times out. If
+sudo -n reports "a password is required", this machine has no passwordless
+grant: say so and let the user run it. Do not retry without -n, and do not
+edit /etc/sudoers.d/.
+
+Always restore the fans. max holds until something sets it back — nothing
+expires it; only auto or a reboot does. Pair every max with a trap in the
+same shell so the restore survives a failing command or a Ctrl-C:
+
+    sudo -n fancontrol max
+    trap 'sudo -n fancontrol auto' EXIT
+    ./run-benchmark.sh
+
+Never end a session with the fans forced. Check status afterwards and confirm
+mode came back to "auto".
+
+Fan count and RPM ranges vary by machine, so probe status rather than
+assuming. A fan reporting actual_rpm 0 is stopped, which is normal when idle
+and not a failure.
 ```
 
-`set` is deliberately out of scope for an agent. `max` and `auto` only ever
-add cooling or hand control back to macOS, while `set` can hold fans below
-what thermal policy is asking for — a call for a human who can see the
-machine. `Scripts/install.sh` grants passwordless sudo on the same three
-subcommands, so the machine enforces the same boundary.
+`Scripts/install.sh` grants passwordless sudo for `max`, `auto` and `reset`
+alone, so the machine enforces the same boundary the prompt describes.
 
 ## Releases
 
