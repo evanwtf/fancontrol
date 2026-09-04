@@ -76,17 +76,20 @@ cp Scripts/install.sh "$stage/install.sh"
 cp README.md "$stage/README.md"
 chmod 755 "$stage/fancontrol" "$stage/install.sh"
 
-# Strip extended attributes before zipping. A CI checkout leaves provenance
-# xattrs on the files, and `ditto -c -k` preserves them as AppleDouble "._"
-# sidecars inside the archive -- invisible to Finder, three junk files to
-# anyone who runs `unzip`. A Mach-O signature is embedded in the binary, not
-# in an xattr, so clearing them leaves the signature intact (the check below
-# proves it).
-xattr -cr "$stage"
-
-# ditto, not zip: the notary service needs the signature preserved, and `zip`
-# mangles it.
-ditto -c -k --keepParent "$stage" "$zip"
+# ditto, not zip: it handles a signed Mach-O without mangling it.
+#
+# The metadata flags are not optional. ditto stores filesystem metadata as
+# AppleDouble "._" sidecars inside the archive -- invisible in Finder, three
+# junk files to anyone who runs `unzip`. A local build produces none, so this
+# only appears in CI: files under the runner's work directory inherit an ACL.
+# Clearing extended attributes with `xattr -cr` does not help, because an ACL
+# is not an extended attribute and survives it. Telling ditto to copy no
+# metadata at all is what works.
+#
+# None of it is needed downstream: a Mach-O signature lives inside the binary,
+# so the copy that reaches Apple and the user is byte-for-byte the signed one
+# (the check below proves it).
+ditto -c -k --keepParent --noextattr --noacl --norsrc --noqtn "$stage" "$zip"
 
 # Check what actually landed in the zip. The three files are the whole
 # product, and a recipient who unzips it and finds no install.sh has no way
