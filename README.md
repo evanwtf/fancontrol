@@ -150,6 +150,21 @@ changelog section is refused rather than published with empty notes.
 `Scripts/package.sh` does the build-sign-zip-notarize part on its own, so a
 release can be reproduced locally exactly as CI cut it.
 
+Signing and notarization are configured by two repository variables, not
+secrets, since both are only names:
+
+```sh
+gh variable set SIGN_IDENTITY --body "Developer ID Application: NAME (TEAMID)"
+gh variable set NOTARY_PROFILE --body "monitor-notary"
+```
+
+`NOTARY_PROFILE` names a `notarytool` credential profile in the keychain of
+the macOS runner. The profile holds an app-specific password and
+authenticates to the team rather than to a product, so the one the `monitor`
+repo already uses notarizes this too. No credential material goes into GitHub.
+Rebuilding that Mac means recreating the profile with `xcrun notarytool
+store-credentials`; the password for it is in 1Password.
+
 ## Development
 
 ```sh

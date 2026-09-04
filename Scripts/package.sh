@@ -11,10 +11,15 @@
 # reproduced on a laptop exactly as CI cut it. Signing is Scripts/build.sh's
 # job; this script requires that it used a real identity.
 #
-# Notarization needs an App Store Connect API key, passed as:
-#   FANCONTROL_NOTARY_KEY_PATH    the .p8 file
-#   FANCONTROL_NOTARY_KEY_ID      the key ID
-#   FANCONTROL_NOTARY_ISSUER_ID   the issuer UUID
+# Notarization needs a notarytool credential profile in the keychain of the
+# Mac that runs this, named by:
+#   FANCONTROL_NOTARY_PROFILE     e.g. monitor-notary
+#
+# The profile holds an app-specific password and authenticates you to the
+# team, not to a product, so one profile notarizes every app this team signs.
+# Create one with:
+#   xcrun notarytool store-credentials <name> \
+#       --apple-id <you> --team-id <TEAMID> --password <app-specific>
 #
 # A ticket cannot be stapled to a bare CLI binary -- `stapler` handles .app,
 # .dmg, and .pkg only. So the zip is notarized and shipped as-is: Apple
@@ -88,21 +93,14 @@ echo "Packaged $zip"
 printf '%s\n' "$listing" | sed 's/^/  /'
 
 if [ "$notarize" -eq 1 ]; then
-    key_path="${FANCONTROL_NOTARY_KEY_PATH:-}"
-    key_id="${FANCONTROL_NOTARY_KEY_ID:-}"
-    issuer_id="${FANCONTROL_NOTARY_ISSUER_ID:-}"
-    [ -n "$key_path" ] || fail "FANCONTROL_NOTARY_KEY_PATH is not set"
-    [ -f "$key_path" ] || fail "no notary key at $key_path"
-    [ -n "$key_id" ] || fail "FANCONTROL_NOTARY_KEY_ID is not set"
-    [ -n "$issuer_id" ] || fail "FANCONTROL_NOTARY_ISSUER_ID is not set"
+    profile="${FANCONTROL_NOTARY_PROFILE:-}"
+    [ -n "$profile" ] || fail "FANCONTROL_NOTARY_PROFILE is not set"
 
     echo "Notarizing ${zip}…"
     # --wait blocks until Apple accepts or rejects. Without it the command
     # returns immediately and the release publishes a zip nobody has checked.
     if ! xcrun notarytool submit "$zip" \
-            --key "$key_path" \
-            --key-id "$key_id" \
-            --issuer "$issuer_id" \
+            --keychain-profile "$profile" \
             --wait; then
         fail "notarization failed; run 'xcrun notarytool log <submission-id>' for the reason"
     fi

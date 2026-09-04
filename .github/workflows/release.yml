@@ -58,14 +58,16 @@ jobs:
         if: steps.check.outputs.needed == 'true'
         run: Scripts/release-notes.sh "${{ steps.version.outputs.version }}"
 
-      - name: Check the signing identity is on this runner
+      - name: Check this runner can sign and notarize
         if: steps.check.outputs.needed == 'true'
         env:
-          IDENTITY: ${{ secrets.FANCONTROL_SIGN_IDENTITY }}
+          IDENTITY: ${{ vars.SIGN_IDENTITY }}
+          PROFILE: ${{ vars.NOTARY_PROFILE }}
         run: |
           set -euo pipefail
-          if [ -z "${IDENTITY}" ]; then
-            echo "::error::FANCONTROL_SIGN_IDENTITY is not set. Add the repository secret." >&2
+          # Both are names, not secrets, so they are repository variables.
+          if [ -z "${IDENTITY}" ] || [ -z "${PROFILE}" ]; then
+            echo "::error::Set the SIGN_IDENTITY and NOTARY_PROFILE repository variables." >&2
             exit 1
           fi
           # Fail here, with the list in the log, rather than inside codesign
@@ -75,35 +77,22 @@ jobs:
             security find-identity -v -p codesigning >&2
             exit 1
           fi
-          echo "Found ${IDENTITY}"
+          # The credential lives in this Mac's keychain and cannot be read
+          # back, so ask Apple whether it still works. One request now beats
+          # discovering it is stale after a full signed build.
+          if ! xcrun notarytool history --keychain-profile "${PROFILE}" >/dev/null 2>&1; then
+            echo "::error::The notarytool profile '${PROFILE}' is missing or rejected by Apple." >&2
+            echo "::error::Recreate it on this Mac with 'xcrun notarytool store-credentials'." >&2
+            exit 1
+          fi
+          echo "Signing as ${IDENTITY}, notarizing with ${PROFILE}"
 
       - name: Build, sign, notarize
         if: steps.check.outputs.needed == 'true'
         env:
-          FANCONTROL_SIGN_IDENTITY: ${{ secrets.FANCONTROL_SIGN_IDENTITY }}
-          NOTARY_KEY: ${{ secrets.FANCONTROL_NOTARY_KEY }}
-          FANCONTROL_NOTARY_KEY_ID: ${{ secrets.FANCONTROL_NOTARY_KEY_ID }}
-          FANCONTROL_NOTARY_ISSUER_ID: ${{ secrets.FANCONTROL_NOTARY_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          for name in NOTARY_KEY FANCONTROL_NOTARY_KEY_ID FANCONTROL_NOTARY_ISSUER_ID; do
-            eval "value=\${$name}"
-            if [ -z "${value}" ]; then
-              echo "::error::${name} is not set. Add the repository secret." >&2
-              exit 1
-            fi
-          done
-
-          # The .p8 has to be a file for notarytool. Write it outside the
-          # workspace so a later step cannot archive it by accident, and
-          # remove it however this step ends -- this is a shared runner.
-          key_file="$(mktemp "${RUNNER_TEMP}/notary-key.XXXXXX.p8")"
-          trap 'rm -f "${key_file}"' EXIT
-          chmod 600 "${key_file}"
-          printf '%s' "${NOTARY_KEY}" > "${key_file}"
-
-          FANCONTROL_NOTARY_KEY_PATH="${key_file}" \
-            Scripts/package.sh --notarize
+          FANCONTROL_SIGN_IDENTITY: ${{ vars.SIGN_IDENTITY }}
+          FANCONTROL_NOTARY_PROFILE: ${{ vars.NOTARY_PROFILE }}
+        run: Scripts/package.sh --notarize
 
       - name: Tag and publish
         if: steps.check.outputs.needed == 'true'
