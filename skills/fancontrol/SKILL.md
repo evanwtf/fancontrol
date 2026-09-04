@@ -1,20 +1,20 @@
 ---
 name: fancontrol
-description: Use when reading or overriding Mac fan speeds on this machine - checking fan RPM, pinning fans to maximum before a benchmark, thermal test, or long compile, or returning fans to macOS thermal control. Also when a run left the fans loud and they need restoring.
+description: Use when reading or overriding Mac fan speeds - checking fan RPM, pinning fans to maximum before a benchmark, thermal test, or long compile, or returning fans to macOS thermal control. Also when a run left the fans loud and they need restoring.
 ---
 
 # fancontrol
 
-Reads and overrides fan speeds via AppleSMC on Apple Silicon Macs. Installed
-at `/usr/local/bin/fancontrol`. Every subcommand takes `--json`.
+Reads and overrides fan speeds via AppleSMC on Apple Silicon Macs. Every
+subcommand takes `--json`.
 
 ## Only three commands are yours to run
 
 | Goal | Command | sudo |
 |---|---|---|
 | Read fan RPM and mode | `fancontrol status --json` | no |
-| Pin every fan to maximum | `sudo -n fancontrol max --json` | passwordless |
-| Return fans to macOS control | `sudo -n fancontrol auto --json` | passwordless |
+| Pin every fan to maximum | `sudo -n fancontrol max --json` | see below |
+| Return fans to macOS control | `sudo -n fancontrol auto --json` | see below |
 
 `reset` is a synonym for `auto`. Exit codes: `0` ok, `1` runtime error,
 `2` needs root, `64` usage error.
@@ -29,9 +29,9 @@ control back to macOS. `set` is the one command that can hold fans *below*
 what thermal policy is asking for, which is how a machine overheats or
 throttles under load. That call needs a human who can see the machine.
 
-The sudoers grant covers `max`, `auto`, and `reset` alone, so `set` also
-fails without an interactive password. This is deliberate. Do not work around
-it.
+`Scripts/install.sh` grants passwordless sudo for `max`, `auto` and `reset`
+alone, so on a machine set up that way `set` also fails without an
+interactive password. This is deliberate. Do not work around it.
 
 **Red flags — stop:**
 - "A specific RPM would be quieter than max here"
@@ -45,9 +45,11 @@ If a specific RPM is genuinely wanted, say so and let the user run it.
 
 `sudo -n` refuses instead of prompting. A plain `sudo` waits on a password
 prompt that is invisible in a non-interactive session, so the command hangs
-until it times out. Use `-n` on every write, including the passwordless ones
-— a reinstalled machine may not have the grant yet, and failing in a second
-beats hanging.
+until it times out.
+
+If `sudo -n` reports `a password is required`, this machine has no passwordless
+grant — `Scripts/install.sh` installs one. Say so and let the user run the
+command themselves. Do not retry without `-n`.
 
 ## Restore the fans
 
@@ -67,6 +69,8 @@ Never run `max` as the last thing in a session. Check `status` afterwards and
 confirm `mode` came back to `auto`.
 
 ## Output shapes
+
+RPM values below are from one machine; every number varies by model.
 
 ```jsonc
 // status
@@ -91,4 +95,4 @@ which is normal on an idle Apple Silicon Mac and not a failure.
 | `max` with no restore | Fans stay at maximum indefinitely |
 | Restoring on the next line | A failing command skips it; use `trap` |
 | Reading `actual_rpm: 0` as broken | Idle fans genuinely stop |
-| Assuming a fan count | Probe `status`; fan indices vary by machine |
+| Assuming a fan count or RPM range | Probe `status`; both vary by machine |

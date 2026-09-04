@@ -132,6 +132,25 @@ does when it can.
 - [`beltex/SMCKit`](https://github.com/beltex/SMCKit) — a modern Swift port of
   the same interface.
 
+## Use it with Claude Code
+
+`skills/fancontrol/SKILL.md` is a [skill](https://agentskills.io) that teaches
+a coding agent to drive this tool: read with `status`, write with `max` and
+`auto` only, always `sudo -n` so a password prompt cannot hang a
+non-interactive session, and always restore the fans afterwards. Install it
+for your own user:
+
+```sh
+mkdir -p ~/.claude/skills
+cp -r skills/fancontrol ~/.claude/skills/
+```
+
+`set` is deliberately out of scope for an agent. `max` and `auto` only ever
+add cooling or hand control back to macOS, while `set` can hold fans below
+what thermal policy is asking for — a call for a human who can see the
+machine. `Scripts/install.sh` grants passwordless sudo on the same three
+subcommands, so the machine enforces the same boundary.
+
 ## Releases
 
 The version in `Sources/fancontrol/FanControl.swift` decides what ships.
