@@ -14,6 +14,19 @@ matching swift.org toolchain).
 ```sh
 git clone https://github.com/evanwtf/fancontrol.git
 cd fancontrol
+Scripts/install.sh
+```
+
+That builds and signs the binary, installs it to `/usr/local/bin/fancontrol`
+(root-owned), and writes `/etc/sudoers.d/fancontrol` granting passwordless
+sudo for the fan-write subcommands only: `max`, `auto` and `reset`, with or
+without flags. `set` stays outside the grant — slowing the fans keeps the
+password prompt — and `status` never needed sudo. Re-running the script is
+idempotent; delete `/etc/sudoers.d/fancontrol` to revoke passwordless sudo.
+
+To install without the sudoers entry, build and copy by hand:
+
+```sh
 swift build -c release
 sudo cp .build/release/fancontrol /usr/local/bin/
 ```
@@ -29,7 +42,11 @@ sudo fancontrol max               # force every fan to its max RPM
 sudo fancontrol set 4500          # force every fan to 4500 RPM (clamped)
 sudo fancontrol set 4500 --fan 0  # one fan only
 sudo fancontrol auto              # hand control back to macOS
+sudo fancontrol reset             # synonym for auto
 ```
+
+After `Scripts/install.sh`, `max`, `auto` and `reset` run under sudo without
+a password prompt.
 
 On a fanless Mac (all Apple Silicon MacBook Airs, for example) `status`
 prints a "no fans found" message with a search URL for that model, and
@@ -71,7 +88,7 @@ trap 'sudo fancontrol auto' EXIT
 ./run-my-benchmark.sh
 ```
 
-`fancontrol auto` sets `F<n>md` back to `0`; macOS's own thermal policy resumes
+`fancontrol auto` (or `reset`) sets `F<n>md` back to `0`; macOS's own thermal policy resumes
 immediately. If the process dies without running `auto`, a reboot also restores
 default behaviour — the mode override is not persisted across boots.
 

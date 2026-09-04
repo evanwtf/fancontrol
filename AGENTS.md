@@ -86,9 +86,12 @@ Only built and tested on one machine: **MacBook Pro M5 Max, 128 GB, macOS 26.6.2
 
 There are three usable patterns; pick one per environment and stick with it:
 
-- **NOPASSWD for `fancontrol` only.** Add `evanhoffman ALL=(root) NOPASSWD:
-  /usr/local/bin/fancontrol` to `sudoers.d/fancontrol`. Best for a laptop
-  running the benchmark.
+- **NOPASSWD for the write subcommands.** `Scripts/install.sh` sets this up:
+  it builds, installs a root-owned binary at `/usr/local/bin/fancontrol`, and
+  writes `/etc/sudoers.d/fancontrol` granting `max`, `auto` and `reset` (bare
+  form plus flags) but not `set`. Re-running it is idempotent; delete
+  `/etc/sudoers.d/fancontrol` to revoke. Best for a laptop running the
+  benchmark.
 - **A LaunchDaemon that owns the SMC.** Wrap the binary in a daemon and talk
   to it over a Unix socket. Not yet built.
 - **Ask once at the start.** `sudo -v` before the trap, then rely on the
@@ -147,7 +150,8 @@ Re-verified 2026-09-03 on macOS 26.6.2, MacBook Air Mac17,3 (MDH74LL/A):
   of privilege, so it is not an alternative.
 
 Conclusion: `fancontrol status` needs no sudo. `fancontrol max`, `set` and
-`auto` still do, because they write. A `sudoers.d` NOPASSWD entry for
-`/usr/local/bin/fancontrol` remains the simplest agent-driven setup; a
-LaunchDaemon that owns the SMC handle and answers over a Unix socket is the
-other option, and neither is needed for read-only status.
+`auto` still do, because they write. `Scripts/install.sh` sets up the
+simplest agent-driven arrangement — a `sudoers.d` NOPASSWD entry scoped to
+`max`, `auto` and `reset`; a LaunchDaemon that owns the SMC handle and
+answers over a Unix socket is the other option, and neither is needed for
+read-only status.

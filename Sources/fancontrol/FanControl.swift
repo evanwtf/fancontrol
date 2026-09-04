@@ -163,6 +163,31 @@ func noFansMessage() -> String {
          + "Confirm this model is fanless: \(url)"
 }
 
+// The auto/restore path, shared by `auto` and its synonym `reset` so the two
+// cannot drift apart. The action name is echoed in JSON output for provenance.
+func runRestoreAuto(action: String, json: Bool) throws {
+    try requireRoot(json: json)
+    let smc = try openSMC(json: json)
+    let fans = try readFans(smc)
+    try requireFans(fans, json: json)
+    var results: [ActionResult] = []
+    for f in fans {
+        guard let modeKey = resolveModeKey(smc, f.index) else {
+            emitError("fan \(f.index) has no mode key (probed \(modeKeyCandidates(f.index).joined(separator: ", ")))", json: json)
+            throw ExitCode(1)
+        }
+        do { try smc.write(modeKey, bytes: [0]) }
+        catch {
+            emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
+            throw ExitCode(1)
+        }
+        results.append(ActionResult(
+            fan: f.index, mode: "auto",
+            target_rpm: f.target_rpm, min_rpm: f.min_rpm, max_rpm: f.max_rpm))
+    }
+    emit(action: action, results: results, json: json)
+}
+
 func requireFans(_ fans: [FanInfo], json: Bool) throws {
     guard fans.isEmpty else { return }
     emitError(noFansMessage(), json: json)
@@ -180,7 +205,7 @@ Every subcommand accepts --json for structured output on stdout;
 errors are emitted as JSON on stderr when --json is set.
 """,
         version: "0.1.0",
-        subcommands: [Status.self, Max.self, Auto.self, Set.self],
+        subcommands: [Status.self, Max.self, Auto.self, Reset.self, Set.self],
         defaultSubcommand: Status.self
     )
 }
@@ -253,28 +278,15 @@ extension FanControl {
             abstract: "Return every fan to macOS thermal control. Needs sudo.")
         @Flag(help: "Emit JSON on stdout.") var json = false
 
-        func run() throws {
-            try requireRoot(json: json)
-            let smc = try openSMC(json: json)
-            let fans = try readFans(smc)
-            try requireFans(fans, json: json)
-            var results: [ActionResult] = []
-            for f in fans {
-                guard let modeKey = resolveModeKey(smc, f.index) else {
-                    emitError("fan \(f.index) has no mode key (probed \(modeKeyCandidates(f.index).joined(separator: ", ")))", json: json)
-                    throw ExitCode(1)
-                }
-                do { try smc.write(modeKey, bytes: [0]) }
-                catch {
-                    emitError("write failed on fan \(f.index)", detail: "\(error)", json: json)
-                    throw ExitCode(1)
-                }
-                results.append(ActionResult(
-                    fan: f.index, mode: "auto",
-                    target_rpm: f.target_rpm, min_rpm: f.min_rpm, max_rpm: f.max_rpm))
-            }
-            emit(action: "auto", results: results, json: json)
-        }
+        func run() throws { try runRestoreAuto(action: "auto", json: json) }
+    }
+
+    struct Reset: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Synonym for auto — return every fan to macOS thermal control. Needs sudo.")
+        @Flag(help: "Emit JSON on stdout.") var json = false
+
+        func run() throws { try runRestoreAuto(action: "reset", json: json) }
     }
 
     struct Set: ParsableCommand {
