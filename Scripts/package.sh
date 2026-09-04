@@ -76,8 +76,16 @@ cp Scripts/install.sh "$stage/install.sh"
 cp README.md "$stage/README.md"
 chmod 755 "$stage/fancontrol" "$stage/install.sh"
 
-# ditto, not zip: the notary service needs the extended attributes and the
-# signature preserved, and `zip` drops them.
+# Strip extended attributes before zipping. A CI checkout leaves provenance
+# xattrs on the files, and `ditto -c -k` preserves them as AppleDouble "._"
+# sidecars inside the archive -- invisible to Finder, three junk files to
+# anyone who runs `unzip`. A Mach-O signature is embedded in the binary, not
+# in an xattr, so clearing them leaves the signature intact (the check below
+# proves it).
+xattr -cr "$stage"
+
+# ditto, not zip: the notary service needs the signature preserved, and `zip`
+# mangles it.
 ditto -c -k --keepParent "$stage" "$zip"
 
 # Check what actually landed in the zip. The three files are the whole
@@ -89,6 +97,17 @@ for required in fancontrol install.sh README.md; do
         | grep -qx "$(basename "$stage")/${required}" \
         || fail "$zip does not contain ${required}"
 done
+# And nothing else: an AppleDouble sidecar means the xattr strip above did
+# not take, and the zip would hand the user files they did not ask for.
+if printf '%s\n' "$listing" | grep -q '/\._\|^__MACOSX'; then
+    printf '%s\n' "$listing" | sed 's/^/  /' >&2
+    fail "$zip contains AppleDouble entries"
+fi
+
+# The signature has to survive the xattr strip and the round trip through
+# ditto -- this is the copy that goes to Apple and to users.
+codesign --verify --strict "$stage/fancontrol" \
+    || fail "the staged binary lost its signature during packaging"
 echo "Packaged $zip"
 printf '%s\n' "$listing" | sed 's/^/  /'
 
@@ -105,10 +124,12 @@ if [ "$notarize" -eq 1 ]; then
         fail "notarization failed; run 'xcrun notarytool log <submission-id>' for the reason"
     fi
 
-    # Prove the result rather than trusting the exit code: Gatekeeper's own
-    # verdict on the binary is the thing a user will hit.
-    echo "Verifying Gatekeeper acceptance…"
-    spctl --assess --type exec --verbose=2 "$stage/fancontrol" 2>&1 | sed 's/^/  /'
+    # No spctl check here. `spctl --assess --type exec` assesses app bundles;
+    # on a bare Mach-O executable it answers "rejected (the code is valid but
+    # does not seem to be an app)" however good the signature is, which is a
+    # false negative that failed a release whose zip Apple had just accepted.
+    # notarytool --wait already exits non-zero unless Apple returned Accepted,
+    # so the check above this is the one that means something.
     echo "Notarized $zip"
 else
     echo "Not notarized. A Mac that downloads this zip will refuse to run it."
