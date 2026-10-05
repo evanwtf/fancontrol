@@ -58,6 +58,26 @@ jobs:
         if: steps.check.outputs.needed == 'true'
         run: Scripts/release-notes.sh "${{ steps.version.outputs.version }}"
 
+      # The runner starts each job in its own security session (SessionCreate in
+      # its launchd plist), so the login keychain is locked here even while the
+      # console session has it unlocked. Unlock it for this job only. The last
+      # step locks it again, so a later job cannot use the key without the
+      # password.
+      - name: Unlock the signing keychain
+        if: steps.check.outputs.needed == 'true'
+        env:
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_KEYCHAIN_PASSWORD}" ]; then
+            echo "::error::The MACOS_KEYCHAIN_PASSWORD org secret is not available to this repository." >&2
+            exit 1
+          fi
+          keychain="$HOME/Library/Keychains/login.keychain-db"
+          security unlock-keychain -p "${MACOS_KEYCHAIN_PASSWORD}" "${keychain}"
+          # Two hours, so it cannot lock again while Apple notarizes.
+          security set-keychain-settings -lut 7200 "${keychain}"
+
       - name: Check this runner can sign and notarize
         if: steps.check.outputs.needed == 'true'
         env:
@@ -120,3 +140,10 @@ jobs:
       - name: Clean the build output
         if: always()
         run: rm -rf dist
+
+      - name: Lock the keychain again
+        if: always() && steps.check.outputs.needed == 'true'
+        run: |
+          keychain="$HOME/Library/Keychains/login.keychain-db"
+          security set-keychain-settings "${keychain}" || true
+          security lock-keychain "${keychain}" || true
